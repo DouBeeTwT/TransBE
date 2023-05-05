@@ -20,8 +20,16 @@ warnings.filterwarnings('ignore')
 Dim = 16
 PCA_Size = 50
 Batch_Size = 256
-alpha = 0.7
-lossfile = open(r'./LossFile.csv','w')
+alpha = 0.8
+seed = 1
+Max_No_Improve_Steps = 500
+
+if os.path.exists("../Figures/Figures_seed"+str(seed)):
+    pass
+else:
+    os.mkdir("../Figures/Figures_seed"+str(seed))
+
+lossfile = open(r"../Figures_seed"+str(seed)+"/LossFile.csv",'aw')
 
 def Setup_seed(x):
     torch.manual_seed(x)
@@ -155,7 +163,7 @@ def Plot_Tsne(PCA1, PCA2, file_out_path="./", seed=42):
 
 
 time0 = time.time()
-Setup_seed(42)
+Setup_seed(seed)
 print("Step 1: ", end="")
 Data1, Data2 = Classification("../Data/Sample1.h5ad"), Classification("../Data/Sample2.h5ad")
 Keys = list(set(Data1.columns) & set(Data2.columns))
@@ -180,8 +188,8 @@ Gene = Variable(torch.LongTensor(Gene))
 Gene = torch.tensor(Gene).cuda()
 
 dataloader = DataLoader(TensorDataset(D2), batch_size=Batch_Size, shuffle=True)
-#model = TransBE(Dim, PCA_Size).cuda()
-model = torch.load("../Model/Model_v0.0")
+model = TransBE(Dim, PCA_Size).cuda()
+#model = torch.load("../Model/Model_v0.0")
 criteria = nn.MSELoss().cuda()
 optimizer = torch.optim.Adam(model.parameters())
 time3 = time.time()
@@ -203,17 +211,18 @@ for epoch in range(10000):
         optimizer.step()
         Total_Loss += loss
         D2_remove_batch = torch.cat((D2_remove_batch, feature_g.squeeze(2)), 0)
-    print("Epoch {:5d} | Loss = {:.5f}".format(epoch+1, Total_Loss))
-    if (epoch+1)%50 == 0:
-        Plot_Tsne(D1.cpu(), D2_remove_batch.cpu().detach(), "../Figures/TSNE_"+str(epoch+1)+".png")
+    
     if Total_Loss <= Loss_Min:
+        print("Epoch {:5d} | Loss = {:.5f}".format(epoch+1, Total_Loss))
         Loss_Min = Total_Loss
         No_Improve_Steps = 0
         torch.save(model, "../Model/Model_v0.0")
         print("%5d, %.5f"%(epoch+1, Total_Loss), file=lossfile)
         lossfile.flush()
+        Plot_Tsne(D1.cpu(), D2_remove_batch.cpu().detach(), "../Figures/Figures_seed{}/Figures_TSNE_{}.png".format(seed,str(epoch+1)))
     else:
         No_Improve_Steps += 1
-    if No_Improve_Steps == 200:
-        print("Stop because no improve of loss for 200 steps")
+    
+    if No_Improve_Steps == Max_No_Improve_Steps:
+        print("Stop because no improve of loss for {} steps".format(Max_No_Improve_Steps))
         break
