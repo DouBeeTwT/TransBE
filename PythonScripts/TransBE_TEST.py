@@ -6,6 +6,7 @@ from torch.autograd import Variable
 from torch.utils.data import DataLoader, TensorDataset
 import math
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
@@ -15,21 +16,22 @@ import pandas as pd
 import scanpy as sc
 import warnings
 warnings.filterwarnings('ignore')
-
+matplotlib.use('Agg')
 
 Dim = 16
 PCA_Size = 50
 Batch_Size = 256
 alpha = 0.8
-seed = 1
+seed = 42
 Max_No_Improve_Steps = 500
+torch.cuda.set_device(1)
 
 if os.path.exists("../Figures/Figures_seed"+str(seed)):
     pass
 else:
     os.mkdir("../Figures/Figures_seed"+str(seed))
 
-lossfile = open(r"../Figures_seed"+str(seed)+"/LossFile.csv",'aw')
+lossfile = open("../Figures/Figures_seed"+str(seed)+"/LossFile.csv",'a')
 
 def Setup_seed(x):
     torch.manual_seed(x)
@@ -109,46 +111,27 @@ def Calculate_Loss(D1, D2):
         Loss_list[i] = Distance_In_Group/Distance_Out_Group
     return torch.tensor(torch.sum(Loss_list), requires_grad=False)
 
-class Embeddings(nn.Module):
-    def __init__(self, d_model, vocab) -> None:
-        # d_model: 词嵌入维度
-        # vocab: 词汇总数
-        super(Embeddings, self).__init__()
-        self.lut = nn.Embedding(vocab, d_model)
-        self.d_model = d_model
-    
-    def forward(self, x):
-        return self.lut(x) * math.sqrt(self.d_model)
-
-class AddFeature(nn.Module):
-    def __init__(self) -> None:
-        super(AddFeature, self).__init__()
-
-    def forward(self, x, C):
-        C_unsqueeze = C.unsqueeze(2).repeat(1, 1, Dim)
-        self.register_buffer("C_unsqueeze", C_unsqueeze)
-        x = x + self.C_unsqueeze
-        return x
 
 class TransBE(nn.Module):
-    def __init__(self, Dim, Vocab) -> None:
+    def __init__(self, Dim=128, header=4) -> None:
         super(TransBE, self).__init__()
-        self.embedding_layer = Embeddings(d_model=Dim, vocab=Vocab)
-        self.addfeature_layer = AddFeature()
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=Dim, nhead=4)
+        # 先将读入的 1 x 50 的数据经过一个Linear层生成 128 x 50的数据
+        self.linear_layer1 = nn.Linear(1,Dim)
+        self.relu_layer1 = nn.ReLU()
+        # self.drop_layer1 = nn.Dropout(0.1) 不知道要不要加，加载哪里
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=Dim, nhead=header)
         self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=6)
-        self.decoder_layer = nn.TransformerDecoderLayer(d_model=Dim , nhead=4)
+        self.decoder_layer = nn.TransformerDecoderLayer(d_model=Dim , nhead=header)
         self.transformer_decoder = nn.TransformerDecoder(self.decoder_layer, num_layers=6)
-        self.linear_layer = nn.Linear(Dim, 1)
-        self.relu_layer = nn.ReLU()
-    def forward(self, input_g, data):
-        input_embedding = self.embedding_layer(input_g)
-        src = self.addfeature_layer(input_embedding, data)
+        self.linear_layer2 = nn.Linear(Dim, 1)
+        #self.relu_layer2 = nn.ReLU()
+    def forward(self, data):
+        src = self.relu_layer1(self.linear_layer1(data))
         mid = self.transformer_encoder(src)
         out = self.transformer_decoder(src, mid)
-        feature_g = self.relu_layer(self.linear_layer(mid))
+        out = self.linear_layer2(out)
         
-        return out, feature_g, src
+        return mid, out
 
 def Plot_Tsne(PCA1, PCA2, file_out_path="./", seed=42):
     tsne1 = TSNE(n_components=2, init='pca', random_state=seed)
@@ -188,7 +171,7 @@ Gene = Variable(torch.LongTensor(Gene))
 Gene = torch.tensor(Gene).cuda()
 
 dataloader = DataLoader(TensorDataset(D2), batch_size=Batch_Size, shuffle=True)
-model = TransBE(Dim, PCA_Size).cuda()
+model = TransBE(Dim).cuda()
 #model = torch.load("../Model/Model_v0.0")
 criteria = nn.MSELoss().cuda()
 optimizer = torch.optim.Adam(model.parameters())
@@ -203,14 +186,15 @@ for epoch in range(10000):
     D2_remove_batch = torch.tensor([]).cuda()
     for step, data in enumerate(tqdm(dataloader, leave=False)):
         optimizer.zero_grad()
-        out, feature_g, tgt = model(Gene, data[0])
-        loss1 = criteria(out.contiguous().view(-1, out.size(-1)), tgt.contiguous().view(-1, tgt.size(-1)))/Batch_Size
-        loss2 = Calculate_Loss(D1, torch.squeeze(feature_g, 2))/Batch_Size
+        ipt = data[0].unsqueeze(2)
+        mid, tgt = model(ipt)
+        loss1 = criteria(ipt.contiguous().view(-1, ipt.size(-1)), tgt.contiguous().view(-1, tgt.size(-1)))/Batch_Size
+        loss2 = Calculate_Loss(D1, torch.squeeze(tgt, 2))/Batch_Size
         loss = alpha*loss1+(1-alpha)*loss2
         loss.backward()
         optimizer.step()
         Total_Loss += loss
-        D2_remove_batch = torch.cat((D2_remove_batch, feature_g.squeeze(2)), 0)
+        D2_remove_batch = torch.cat((D2_remove_batch, tgt.squeeze(2)), 0)
     
     if Total_Loss <= Loss_Min:
         print("Epoch {:5d} | Loss = {:.5f}".format(epoch+1, Total_Loss))
