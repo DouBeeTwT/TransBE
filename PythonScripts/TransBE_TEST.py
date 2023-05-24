@@ -193,9 +193,10 @@ for epoch in range(10000):
         loss = alpha*loss1+(1-alpha)*loss2
         loss.backward()
         optimizer.step()
-        Total_Loss += loss
+        Total_Loss += loss * Batch_Size
         D2_remove_batch = torch.cat((D2_remove_batch, tgt.squeeze(2)), 0)
-    
+    Total_Loss = Total_Loss / D2_remove_batch.shape[0]
+
     if Total_Loss <= Loss_Min:
         print("Epoch {:5d} | Loss = {:.5f}".format(epoch+1, Total_Loss))
         Loss_Min = Total_Loss
@@ -209,4 +210,5 @@ for epoch in range(10000):
     
     if No_Improve_Steps == Max_No_Improve_Steps:
         print("Stop because no improve of loss for {} steps".format(Max_No_Improve_Steps))
+        print("Last Epoch {:5d} | Loss = {:.5f}".format(epoch+1, Total_Loss))
         break
